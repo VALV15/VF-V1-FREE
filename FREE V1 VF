@@ -1,0 +1,456 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local GEN = (getgenv and getgenv()) or _G
+
+local HookFunction = GEN.hookfunction or hookfunction
+local NewCClosure = GEN.newcclosure or newcclosure
+local CheckCaller = GEN.checkcaller or checkcaller
+local GetCallingScript = GEN.getcallingscript or getcallingscript
+
+assert(type(HookFunction) == "function", "hookfunction unavailable")
+assert(type(NewCClosure) == "function", "newcclosure unavailable")
+assert(type(getfenv) == "function", "getfenv unavailable")
+
+local MARKER = {
+    -- hook
+    hookfunction = true,
+    hookmetamethod = true,
+    newcclosure = true,
+    clonefunction = true,
+    checkcaller = true,
+    getnamecallmethod = true,
+    getcallingscript = true,
+    isexecutorclosure = true,
+    isourclosure = true,
+    iscclosure = true,
+    islclosure = true,
+    getgc = true,
+    getreg = true,
+    getrawmetatable = true,
+    setreadonly = true,
+    isreadonly = true,
+    make_writeable = true,
+    make_readonly = true,
+    getconnections = true,
+    getcallbackvalue = true,
+    getscriptclosure = true,
+    getscriptbytecode = true,
+    getsenv = true,
+    getmenv = true,
+    getloadedmodules = true,
+    getscripts = true,
+    getrunningscripts = true,
+
+    -- debug/upvalue helpers 
+    getconstants = true,
+    getconstant = true,
+    setconstant = true,
+    getupvalues = true,
+    getupvalue = true,
+    setupvalue = true,
+    getprotos = true,
+    getproto = true,
+    setproto = true,
+
+    -- executor environment / identity
+    getgenv = true,
+    getrenv = true,
+    identifyexecutor = true,
+    getexecutorname = true,
+    syn = true,
+    KRNL_LOADED = true,
+    fluxus = true,
+    SENTINEL_LOADED = true,
+
+    -- filesystem / network / clipboard / websocket
+    readfile = true,
+    writefile = true,
+    appendfile = true,
+    loadfile = true,
+    listfiles = true,
+    makefolder = true,
+    delfile = true,
+    delfolder = true,
+    isfile = true,
+    isfolder = true,
+    setclipboard = true,
+    toclipboard = true,
+    request = true,
+    http_request = true,
+    httprequest = true,
+    WebSocket = true,
+
+    -- instance / signal helpers
+    gethui = true,
+    protect_gui = true,
+    unprotect_gui = true,
+    cloneref = true,
+    fireclickdetector = true,
+    fireproximityprompt = true,
+    firetouchinterest = true,
+    firesignal = true,
+    gethiddenproperty = true,
+    sethiddenproperty = true,
+    setscriptable = true,
+
+    -- common rendering / teleport helpers
+    Drawing = true,
+    queue_on_teleport = true,
+    queueonteleport = true,
+}
+
+local function callerIsGame()
+    if type(GetCallingScript) == "function" then
+        local ok, scr = pcall(GetCallingScript)
+        if ok and typeof(scr) == "Instance" then
+            return true, scr
+        end
+    end
+
+    if type(CheckCaller) == "function" then
+        local ok, own = pcall(CheckCaller)
+        if ok then
+            return not own, nil
+        end
+    end
+
+    return true, nil
+end
+
+local function copySanitized(src, selfRef)
+    if type(src) ~= "table" then
+        return src
+    end
+
+    local out = {}
+
+    local k, v = next(src, nil)
+    while k ~= nil do
+        local hide = (type(k) == "string" and MARKER[k] == true)
+
+        if not hide then
+            if k == "_G" and type(v) == "table" then
+                out[k] = out
+            else
+                out[k] = v
+            end
+        end
+
+        k, v = next(src, k)
+    end
+
+    if selfRef and src == selfRef then
+        out._G = out
+    end
+
+    return out
+end
+
+local OriginalRawget = rawget
+local OriginalGetfenv = getfenv
+local OriginalGetgenv = rawget(GEN, "getgenv")
+local OriginalGetrenv = rawget(GEN, "getrenv")
+
+local OldRawget
+OldRawget = HookFunction(rawget, NewCClosure(function(t, k)
+    local gameCaller = callerIsGame()
+
+    if gameCaller and type(k) == "string" and MARKER[k] then
+        return nil
+    end
+
+    return OldRawget(t, k)
+end))
+
+OldGetfenv = HookFunction(getfenv, NewCClosure(function(target)
+    local query = target
+
+    if type(target) == "number" then
+        query = target + 1
+    elseif target == nil then
+        query = 2
+    end
+
+    local env = OldGetfenv(query)
+
+    local gameCaller = callerIsGame()
+    if gameCaller and type(env) == "table" then
+        return copySanitized(env, GEN)
+    end
+
+    return env
+end))
+
+if type(OriginalGetgenv) == "function" and OriginalGetgenv ~= getfenv then
+    local OldGetgenv
+    OldGetgenv = HookFunction(OriginalGetgenv, NewCClosure(function(...)
+        local env = OldGetgenv(...)
+        local gameCaller = callerIsGame()
+        if gameCaller and type(env) == "table" then
+            return copySanitized(env, GEN)
+        end
+        return env
+    end))
+end
+
+if type(OriginalGetrenv) == "function" and OriginalGetrenv ~= OriginalGetgenv and OriginalGetrenv ~= getfenv then
+    local OldGetrenv
+    OldGetrenv = HookFunction(OriginalGetrenv, NewCClosure(function(...)
+        local env = OldGetrenv(...)
+        local gameCaller = callerIsGame()
+        if gameCaller and type(env) == "table" then
+            return copySanitized(env, GEN)
+        end
+        return env
+    end))
+end
+local KickInstalled = false
+do
+    local ok, kickMethod = pcall(function()
+        return LocalPlayer.Kick
+    end)
+
+    if ok and type(kickMethod) == "function" then
+        local OldKick
+        OldKick = HookFunction(kickMethod, NewCClosure(function(self, ...)
+            local gameCaller = callerIsGame()
+            if gameCaller and self == LocalPlayer then
+                return nil
+            end
+            return OldKick(self, ...)
+        end))
+        KickInstalled = true
+    end
+end
+
+-- ==================== UI & Cheat Initialization ====================
+local UserInputService = game:GetService("UserInputService")
+local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+
+local repo = isMobile 
+    and "https://raw.githubusercontent.com/LionTheGreatRealFrFr/MobileLinoriaLib/main/" 
+    or "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
+
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+Library.ShowToggleFrameInKeybinds = true 
+Library.ShowCustomCursor = true 
+Library.NotifySide = "Left" 
+
+local Window = Library:CreateWindow({
+	Title = isMobile and "Valv FREE - Mobile V1" or "Valv FREE - PC V1",
+	Center = true,
+	AutoShow = true,
+	Resizable = true,
+	ShowCustomCursor = true,
+	UnlockMouseWhileOpen = true,
+	NotifySide = "Left",
+	TabPadding = 8,
+	MenuFadeTime = 0.2
+})
+
+local Tabs = {
+	Main = Window:AddTab("Main"),
+	Visual = Window:AddTab("Visual"),
+	Misc = Window:AddTab("Misc"), 
+	["UI Settings"] = Window:AddTab("UI Settings"),
+}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local SoundService = game:GetService("SoundService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+
+local Camera = Workspace.CurrentCamera
+
+local playerScripts = LocalPlayer:WaitForChild("PlayerScripts", 10)
+local controllers = playerScripts and playerScripts:WaitForChild("Controllers", 10)
+
+local Modules = ReplicatedStorage:WaitForChild("Modules", 10)
+local EnumLibrary = Modules and require(Modules:WaitForChild("EnumLibrary", 10))
+if EnumLibrary and EnumLibrary.WaitForEnumBuilder then pcall(function() EnumLibrary:WaitForEnumBuilder() end) end
+
+local FighterController
+if controllers then
+    pcall(function() FighterController = require(controllers:WaitForChild("FighterController", 10)) end)
+end
+
+-- ==================== Rage / Packet Module ====================
+local remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+local UseItemRemote = remotes and remotes:WaitForChild("Replication", 10):WaitForChild("Fighter", 10):WaitForChild("UseItem", 10)
+local StartShootingEnum = EnumLibrary and EnumLibrary:ToEnum("StartShooting") or "StartShooting"
+local RageModule = {
+    Name = "Rage",
+    LockedTarget = nil,
+    NextShootAt = 0,
+    OriginalPosition = nil,
+    Connections = {}
+}
+
+local function isEnemy(player)
+    if player == LocalPlayer then return false end
+    local teamCheckEnabled = Toggles.RageTeamCheck and Toggles.RageTeamCheck.Value
+    if teamCheckEnabled then
+        local myTeam = LocalPlayer:GetAttribute("TeamID")
+        local theirTeam = player:GetAttribute("TeamID")
+        if myTeam == nil or theirTeam == nil then return true end
+        return theirTeam ~= myTeam
+    end
+    return true
+end
+
+local function isProtected(character)
+    if not character then return true end
+    if character:FindFirstChild("InvincibilityParticles", true) then return true end
+    if character:GetAttribute("SpawnProtection") == true or character:GetAttribute("Invincible") == true then
+        return true
+    end
+    return false
+end
+
+local function getEquippedObjId()
+    if not controllers then return nil end
+    local ok, FighterCtrl = pcall(function() return require(controllers.FighterController) end)
+    if not ok or not FighterCtrl or not FighterCtrl.LocalFighter then return nil end
+    local item = FighterCtrl.LocalFighter.EquippedItem
+    if not item then return nil end
+    local okId, id = pcall(function() return item:Get("ObjectID") end)
+    if okId and id then return id end
+    local okData, idData = pcall(function() return item.Data and item.Data.ObjectID end)
+    return okData and idData or nil
+end
+
+local function getTargetEquippedWeaponName(targetPlayer)
+    pcall(function()
+        if FighterController then
+            local fighter = FighterController:GetFighter(targetPlayer)
+            if fighter and fighter.EquippedItem then
+                return fighter.EquippedItem.Name
+            end
+        end
+    end)
+    local char = targetPlayer.Character
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") or child:FindFirstChild("Handle") then
+                return child.Name
+            end
+        end
+    end
+    return ""
+end
+
+local function getStickyTarget()
+    if RageModule.LockedTarget and RageModule.LockedTarget.Character then
+        local char = RageModule.LockedTarget.Character
+        local hum = char:FindFirstChildWhichIsA("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hum and hum.Health > 0 and hrp and not isProtected(char) then
+            return RageModule.LockedTarget
+        else
+            RageModule.LockedTarget = nil
+        end
+    end
+    
+    local bestTarget = nil
+    local minDistance = math.huge
+    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if not isEnemy(player) then continue end
+        local char = player.Character
+        if not char then continue end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildWhichIsA("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then continue end
+        if isProtected(char) then continue end
+        
+        if myHrp then
+            local distToPlayer = (hrp.Position - myHrp.Position).Magnitude
+            if distToPlayer > 600 then continue end
+        end
+        
+        local screenPos, isVisible = Camera:WorldToViewportPoint(hrp.Position)
+        if not isVisible then continue end
+        
+        local distance = (Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2) - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+        if distance < minDistance then
+            minDistance = distance
+            bestTarget = player
+        end
+    end
+    
+    RageModule.LockedTarget = bestTarget
+    return bestTarget
+end
+local function buildShotData(originPos, targetPart)
+    local targetPos = targetPart.Position
+    local lookCF = CFrame.lookAt(originPos, targetPos)
+    local lX, lY, lZ = lookCF:ToOrientation()
+    local originStruct = {
+        [utf8.char(0)] = originPos.X, [utf8.char(1)] = originPos.Y, [utf8.char(2)] = originPos.Z,
+        [utf8.char(3)] = lX, [utf8.char(4)] = lY, [utf8.char(5)] = lZ,
+    }
+    local relCF = targetPart.CFrame:ToObjectSpace(CFrame.new(targetPos))
+    local rX, rY, rZ = relCF:ToOrientation()
+    return {
+        [utf8.char(1)] = {
+            [utf8.char(0)] = originStruct,
+            [utf8.char(1)] = originStruct,
+            [utf8.char(2)] = targetPart,
+            [utf8.char(3)] = {
+                [utf8.char(0)] = relCF.X, [utf8.char(1)] = relCF.Y, [utf8.char(2)] = relCF.Z,
+                [utf8.char(3)] = rX, [utf8.char(4)] = rY, [utf8.char(5)] = rZ,
+            },
+        }
+    }
+end
+
+local function runRageLogic()
+    if not Toggles.RageToggle or not Toggles.RageToggle.Value or not UseItemRemote then return end
+
+    local char = LocalPlayer.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
+    if not hrp or not hum then return end
+    
+    RageModule.OriginalPosition = hrp.Position
+    
+    local targetPlayer = getStickyTarget()
+    if targetPlayer and targetPlayer.Character then
+        local tc = targetPlayer.Character
+        local tRoot = tc:FindFirstChild("HumanoidRootPart")
+        local tHead = tc:FindFirstChild("HitboxHeadSmall") or tc:FindFirstChild("HitboxHead") or tc:FindFirstChild("Head")
+        local objId = getEquippedObjId()
+        
+        if tRoot and tHead and objId then
+            if not isProtected(tc) then
+                local enemyWeapon = string.lower(getTargetEquippedWeaponName(targetPlayer))
+                
+                if enemyWeapon:find("katana") then
+                    return
+                end
+                
+                local fakePositionCF = tHead.CFrame * CFrame.new(0, 2.5, 0) * CFrame.Angles(math.rad(-90), 0, 0)
+                
+                if enemyWeapon:find("riot") or enemyWeapon:find("shield") then
+                    fakePositionCF = tHead.CFrame * CFrame.new(0, 2.5, -6) * CFrame.Angles(math.rad(-90), 0, 0)
+                elseif enemyWeapon:find("knife") then
+                    fakePositionCF = tHead.CFrame * CFrame.new(0, 6, 0) * CFrame.Angles(math.rad(-90), 0, 0)
+                end
+                
+                local currentRealCF = hrp.CFrame
+                
+                hrp.CFrame = fakePositionCF
+                hrp.Velocity = Vector3.zero
+                hrp.RotVelocity = Vector3.zero
+                
+                local shootOrigin = tHead.Position + Vector3.new(0, 1, 0)
